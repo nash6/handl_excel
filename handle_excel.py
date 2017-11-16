@@ -5,11 +5,14 @@ from xlrd import open_workbook
 from xlutils.copy import copy
 import datetime
 import math
+import json
 
 
 class MyHandle(object):
-	SHEET_NAME = u'原始'
+	input_file = u"data/加班申请.xls"
+	output_file = u"output.xls"
 
+	sheet_name = u'原始'
 	top_title_row_num = 1
 
 	idx_confirm_st     = 0
@@ -23,6 +26,7 @@ class MyHandle(object):
 	idx_overtime_cal   = 8
 
 	idx_output         = 9
+	idx_output_comment = 10
 
 	confirm_st_complete = u'完成'
 	confirm_re_accept   = u'同意'
@@ -35,16 +39,28 @@ class MyHandle(object):
 	OVER_TIME_TYPE_MAP = {u'工作日加班【正常工作时间段外】': 0,
 	                      u'休息日加班【正常工作时间段内】': 1,}
 
-	def __init__(self, file_path, out_path):
-		self.file_path = file_path
-		self.out_path = out_path
+	def __init__(self, config_file):
+		self.config = self._parse_config(config_file)
+		if not self.config:
+			print 'Error: config parse failed.'
+			return
+		self.input_file = self.config['input_file']
+		self.out_path = self.config['output_file']
+		self.sheet_name = self.config['sheet_name']
+		self.top_title_row_num = self.config['top_title_row_num']
+
 		self._run()
 
+	def _parse_config(self, config_file):
+		with open(config_file) as f:
+			jsonconfig = json.load(f)
+		return jsonconfig
+
 	def _run(self):
-		r_wb = open_workbook(self.file_path, formatting_info=True, on_demand=True)
-		r_sheet = r_wb.sheet_by_name(self.SHEET_NAME)
+		r_wb = open_workbook(self.input_file, formatting_info=True, on_demand=True)
+		r_sheet = r_wb.sheet_by_name(self.sheet_name)
 		w_wb = copy(r_wb)
-		w_sheet = w_wb.get_sheet(self.SHEET_NAME)
+		w_sheet = w_wb.get_sheet(self.sheet_name)
 		self._do_sheet(r_sheet, w_sheet)
 		w_wb.save(self.out_path)
 
@@ -95,6 +111,5 @@ class MyHandle(object):
 
 
 if __name__ == '__main__':
-	file_path = '1.xls'
-	out_path = 'out.xls'
-	hle = MyHandle(file_path, out_path)
+	config_file = 'my.conf'
+	hle = MyHandle(config_file)
