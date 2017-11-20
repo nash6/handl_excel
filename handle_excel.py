@@ -4,6 +4,7 @@ __author__ = 'lyc'
 from xlrd import open_workbook
 from xlutils.copy import copy
 import datetime
+import time
 import math
 import json
 
@@ -19,36 +20,63 @@ class MyHandle(object):
 	idx_confirm_re     = 1
 	idx_pid            = 2
 	idx_pname          = 3
-	idx_pdepart        = 4
+
 	idx_overtime_type  = 5
 	idx_overtime_start = 6
 	idx_overtime_end   = 7
 	idx_overtime_cal   = 8
 
-	idx_output         = 9
-	idx_output_comment = 10
+	idx_pdepart        = 9
+	idx_output         = 10
+	idx_output_comment = 11
 
 	confirm_st_complete = u'完成'
 	confirm_re_accept   = u'同意'
 
-	depart_type_0 = 0
-	depart_type_1 = 1
-	DEPARTMENT_TYPE_MAP = {u'辅料采购': 0,
-	                       u'林珊珊组': 1,}
+	department_name_design = u'设计部'
+	department_name_customer = u'客服部'
 
-	OVER_TIME_TYPE_MAP = {u'工作日加班【正常工作时间段外】': 0,
-	                      u'休息日加班【正常工作时间段内】': 1,}
+	workday_overtime = 0
+	weekend_overtime = 1
+	OVER_TIME_TYPE_MAP = {u'工作日加班【正常工作时间段外】': workday_overtime,
+	                      u'休息日加班【正常工作时间段内】': weekend_overtime,}
 
-	def __init__(self, config_file):
-		self.config = self._parse_config(config_file)
-		if not self.config:
-			print 'Error: config parse failed.'
-			return
-		self.input_file = self.config['input_file']
-		self.out_path = self.config['output_file']
-		self.sheet_name = self.config['sheet_name']
-		self.top_title_row_num = self.config['top_title_row_num']
+	#### 注意 '00:00' 默认都是加到了明天，请格外注意 ####
+	default_department = {workday_overtime:
+		                      {'time_start_str': '09:30',
+		                       'time_end_str': '18:00',
+		                       'is_in': False},
+	                      weekend_overtime:
+		                      {'time_start_str': '09:30',
+		                       'time_end_str': '17:30',
+		                       'is_in': True}}
 
+	design_department_t = ['21:00', '22:00', '00:00']
+	design_department_hour = [2, 4, 8]
+
+	customer_department = {workday_overtime:
+		                      [{'time_start_str': '09:30',
+		                       'time_end_str': '18:30',},
+		                       {'time_start_str': '15:00',
+		                       'time_end_str': '00:00',}],
+	                       weekend_overtime:
+		                      [{'time_start_str': '09:30',
+		                       'time_end_str': '18:30',},
+		                       {'time_start_str': '15:00',
+		                       'time_end_str': '00:00',}]}
+
+	string_id = {'overtime_start_wrong_when_in': u'加班开始时间有误，依正确时间计算(之内)',
+	             'overtime_end_wrong_when_in': u'加班结束时间有误，依正确时间计算(之内)',
+	             'overtime_start_wrong_when_out': u'加班开始时间有误，依正确时间计算(之外)',
+	             'overtime_end_wrong_when_out': u'加班结束时间有误，依正确时间计算(之外)',
+	             'overtime_end_wrong_when_design': u'加班结束时间有误，设计部',
+	             'overtime_wrong_when_customer': u'加班时间有误，客服部',
+	             'overtime_delta_over_oneday': u'加班时间超过24小时',
+	             'overtime_delta_lt_zero': u'加班时间为负',
+	             'not_approved': u'审批未完成或未同意',
+	             'overtime_type_wrong': u'加班类型错误'}
+
+	def __init__(self):
 		self._run()
 
 	def _parse_config(self, config_file):
@@ -62,10 +90,20 @@ class MyHandle(object):
 		w_wb = copy(r_wb)
 		w_sheet = w_wb.get_sheet(self.sheet_name)
 		self._do_sheet(r_sheet, w_sheet)
-		w_wb.save(self.out_path)
+		w_wb.save(self.output_file)
 
 	def _write(self, w_sheet, row, col, data):
-		w_sheet.write(row, col, data)
+		if col == self.idx_output_comment:
+			assert isinstance(data, list)
+			real_data = ''
+			for each in data:
+				real_each = self.string_id.get(each)
+				assert real_each
+				real_data += real_each
+				real_data += u'\n'
+		else:
+			real_data = data
+		w_sheet.write(row, col, real_data)
 
 	def _do_sheet(self, r_sheet, w_sheet):
 		for idx, row in enumerate(r_sheet.get_rows()):
@@ -75,29 +113,177 @@ class MyHandle(object):
 
 	def _do_row(self, row_idx, row, w_sheet):
 		if not self._check_available_row(row):
-			self._write(w_sheet, row_idx, self.idx_output, u'not_available')
+			self._write(w_sheet, row_idx, self.idx_output_comment, ['not_approved'])
 			return
 
-		department_id = self.DEPARTMENT_TYPE_MAP.get(row[self.idx_pdepart], None)
-		overtime_id = self.OVER_TIME_TYPE_MAP.get(row[self.idx_overtime_type], None)
+		overtime_id = self.OVER_TIME_TYPE_MAP.get(row[self.idx_overtime_type].value, None)
+		if overtime_id is None:
+			self._write(w_sheet, row_idx, self.idx_output_comment, ['overtime_type_wrong'])
+			return
+
 		overtime_start = self._transform_time_str(row[self.idx_overtime_start].value)
 		overtime_end = self._transform_time_str(row[self.idx_overtime_end].value)
-		result = self._do_cal(department_id, overtime_id, overtime_start, overtime_end)
-		self._write(w_sheet, row_idx, self.idx_output, result)
 
-	def _do_cal(self, department_id, overtime_id, overtime_start, overtime_end):
-		result = 0
-		start_t = datetime.datetime(hour=8)
-		end_t = datetime.datetime(hour=18)
+		if overtime_start >= overtime_end:
+			self._out_put(w_sheet, row_idx, 0, ['overtime_delta_lt_zero'])
+			return
 
-		return self._cal_time_delta(overtime_start, overtime_end)
+		department_str = row[self.idx_pdepart].value
+		if department_str == self.department_name_design:
+			over_hours, comment = self.do_design_cal(overtime_id, overtime_start, overtime_end)
+		elif department_str == self.department_name_customer:
+			over_hours, comment = self.do_customer_cal(overtime_id, overtime_start, overtime_end)
+		else:
+			over_hours, comment = self.do_default_cal(overtime_id, overtime_start, overtime_end)
+		self._out_put(w_sheet, row_idx, over_hours, comment)
+
+	def do_default_cal(self, overtime_id, overtime_start, overtime_end):
+		conf = self.default_department.get(overtime_id, {})
+		time_start_str = conf.get('time_start_str')
+		time_end_str = conf.get('time_end_str')
+		is_in = conf.get('is_in')
+		assert time_start_str is not None or time_end_str is not None or is_in is not None
+		return self._cal_result_comment(time_start_str, time_end_str, overtime_start, overtime_end, is_in)
+
+	def do_design_cal(self, overtime_id, overtime_start, overtime_end):
+		if overtime_id == self.workday_overtime:
+			comment = []
+			self._judge_mt_24(overtime_start, overtime_end, comment)
+			hours, ex_comment = self._get_desgin_time(overtime_start, overtime_end)
+			comment.extend(ex_comment)
+			return hours, comment
+		elif overtime_id == self.weekend_overtime:
+			return self.do_default_cal(overtime_id, overtime_start, overtime_end)
+		else:
+			print 'do_design_cal overtime_id', overtime_id
+			assert False
+
+	def do_customer_cal(self, overtime_id, overtime_start, overtime_end):
+		comment = []
+		self._judge_mt_24(overtime_start, overtime_end, comment)
+		info = self.customer_department.get(overtime_id)
+		tmp_datetime = [{k: self._gen_today_datetime(overtime_start, time_str) for k, time_str in each_couple.iteritems()} for each_couple in info]
+		if overtime_id == self.workday_overtime:
+			right_flag = False
+			# for each_tmp in tmp_datetime:
+			# 	if overtime_start <= each_tmp['time_start_str'] and each_tmp['time_end_str'] <= overtime_start and \
+			# 		overtime_end <= each_tmp['time_start_str'] and each_tmp['time_end_str'] <= overtime_end:
+			# 		right_flag = True
+			# 		break
+			if overtime_start >= tmp_datetime[0]['time_end_str'] or overtime_end <= tmp_datetime[1]['time_start_str']:
+				right_flag = True
+			if right_flag:
+				hours = self._cal_time_delta(overtime_start, overtime_end)
+			else:
+				hours = 0
+				comment.append('overtime_wrong_when_customer')
+			return hours, comment
+		elif overtime_id == self.weekend_overtime:
+			result = []
+			for each_couple in info:
+				result.append(self._cal_result_comment(each_couple['time_start_str'], each_couple['time_end_str'],
+				                                       overtime_start, overtime_end, is_in=True))
+			return self._return_max_overtime(result)
+		else:
+			print 'do_customer_cal overtime_id', overtime_id
+			assert False
+
+	def _return_max_overtime(self, result):
+		max_idx = 0
+		max_hours = result[0][0]
+		for idx, (hours, comment) in enumerate(result):
+			if hours > max_hours:
+				max_idx = idx
+				max_hours = hours
+		return result[max_idx]
+
+	def _get_desgin_time(self, overtime_start, overtime_end):
+		tmp_flag_t = [self._gen_today_datetime(overtime_end, time_str) for time_str in self.design_department_t]
+		if overtime_end < tmp_flag_t[0]:
+			return 0, ['overtime_end_wrong_when_design']
+		elif overtime_end < tmp_flag_t[1]:
+			return self.design_department_hour[0], []
+		elif overtime_end < tmp_flag_t[2]:
+			return self.design_department_hour[1], []
+		else:
+			return self.design_department_hour[2], []
+
+	def _out_put(self, w_sheet, row_idx, over_hours, comment):
+		self._write(w_sheet, row_idx, self.idx_output, over_hours)
+		self._write(w_sheet, row_idx, self.idx_output_comment, comment)
 
 	def _transform_time_str(self, time_str):
 		# 2017-10-01 09:30
 		return datetime.datetime.strptime(time_str, '%Y-%m-%d %H:%M')
 
-	def _cal_time_delta(self, time_start, time_end):
-		time_delta = time_end - time_start
+	def _judge_mt_24(self, overtime_start, overtime_end, comment):
+		original_time_delta = overtime_end - overtime_start
+		if original_time_delta.days > 0:
+			comment.append('overtime_delta_over_oneday')
+
+	def _gen_today_datetime(self, overtime_datetime, time_str, is_end=True):
+		overtime_start_date = overtime_datetime.date()
+		tmp_time = time.strptime(time_str, '%H:%M')
+		day_plus = False
+		if time_str == '00:00' and is_end:
+			day_plus = True
+		ret = datetime.datetime(year=overtime_start_date.year, month=overtime_start_date.month, day=overtime_start_date.day,
+		                               hour=tmp_time.tm_hour, minute=tmp_time.tm_min)
+		if day_plus:
+			ret += datetime.timedelta(days = 1)
+		return ret
+
+	def _cal_result_comment(self, time_start_str, time_end_str, overtime_start, overtime_end, is_in):
+		'''
+		:param time_start_str:
+		:param time_end_str:
+		:param overtime_start:
+		:param overtime_end:
+		:param is_in:
+		:return:
+		'''
+		over_hours = 0
+		comment = []
+
+		self._judge_mt_24(overtime_start, overtime_end, comment)
+
+		time_start = self._gen_today_datetime(overtime_start, time_start_str)
+		time_end = self._gen_today_datetime(overtime_start, time_end_str)
+
+		if is_in:
+			if overtime_start < time_start:
+				comment.append('overtime_start_wrong_when_in')
+				overtime_start = time_start
+			if overtime_end > time_end:
+				comment.append('overtime_end_wrong_when_in')
+				overtime_end = time_end
+			over_hours = self._cal_time_delta(overtime_start, overtime_end)
+		else:
+			if overtime_start < time_start:
+				if overtime_end <= time_start:
+					over_hours = self._cal_time_delta(overtime_start, overtime_end)
+				elif overtime_end <= time_end:
+					comment.append('overtime_end_wrong_when_out')
+					over_hours = self._cal_time_delta(overtime_start, time_start)
+				else:
+					comment.append('overtime_start_wrong_when_out')
+					comment.append('overtime_end_wrong_when_out')
+					over_hours = self._cal_time_delta(overtime_start, time_start) + self._cal_time_delta(time_end, overtime_end)
+			elif overtime_start < time_end:
+				comment.append('overtime_start_wrong_when_out')
+				if overtime_end <= time_end:
+					comment.append('overtime_end_wrong_when_out')
+				else:
+					over_hours = self._cal_time_delta(time_end, overtime_end)
+			else:
+				over_hours = self._cal_time_delta(overtime_start, overtime_end)
+
+		return over_hours, comment
+
+	def _cal_time_delta(self, start_t, end_t):
+		if end_t <= start_t:
+			return 0
+		time_delta = end_t - start_t
 		total_seconds = time_delta.total_seconds()
 		hours = math.ceil(total_seconds / 3600.0)
 		return hours
@@ -111,5 +297,4 @@ class MyHandle(object):
 
 
 if __name__ == '__main__':
-	config_file = 'my.conf'
-	hle = MyHandle(config_file)
+	hle = MyHandle()
