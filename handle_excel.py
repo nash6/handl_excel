@@ -75,7 +75,7 @@ class MyHandle(object):
 	             'overtime_end_wrong_when_in': u'加班结束时间有误，依正确时间计算(之内)',
 	             'overtime_start_wrong_when_out': u'加班开始时间有误，依正确时间计算(之外)',
 	             'overtime_end_wrong_when_out': u'加班结束时间有误，依正确时间计算(之外)',
-	             'overtime_end_wrong_when_design': u'加班结束时间有误，设计部',
+	             'overtime_wrong_when_design': u'加班时间有误，设计部',
 	             'overtime_wrong_when_customer': u'加班时间有误，客服部',
 	             'overtime_delta_over_oneday': u'加班时间超过24小时',
 	             'overtime_delta_lt_zero': u'加班时间为负',
@@ -101,6 +101,7 @@ class MyHandle(object):
 		w_sheet = w_wb.get_sheet(self.sheet_name)
 		self._do_sheet(r_sheet, w_sheet)
 		w_wb.save(self.output_file)
+		print '-- Run success! --'
 
 	def _write(self, w_sheet, row, col, data, color=None):
 		if isinstance(data, list):
@@ -203,9 +204,15 @@ class MyHandle(object):
 
 	def _get_desgin_time(self, overtime_start, overtime_end):
 		tmp_flag_t = [self._gen_today_datetime(overtime_end, time_str, is_end=False) for time_str in self.design_department_t]
-		if tmp_flag_t[0] <= overtime_end < tmp_flag_t[1]:
-			return self.design_department_hour[0], [], []
-		elif overtime_end < tmp_flag_t[1]:
+		if tmp_flag_t[0] == overtime_end:
+			return self.design_department_hour[2], [], []
+		if tmp_flag_t[0] < overtime_end < tmp_flag_t[1]:
+			date_delta = overtime_end.date() - overtime_start.date()
+			if date_delta.days == 0:
+				return 0, ['overtime_wrong_when_design'], []
+			else:
+				return self.design_department_hour[0], [], []
+		elif tmp_flag_t[1] <= overtime_end <= tmp_flag_t[2]:
 			return self.design_department_hour[1], [], []
 		else:
 			return self.design_department_hour[2], [], []
@@ -223,7 +230,7 @@ class MyHandle(object):
 			auto_result = row[self.idx_overtime_cal].value
 			auto_result = auto_result[:-2]
 			ori_hours = float(auto_result)
-			if (ori_hours - round(over_hours, 2)) <= 0.0001:
+			if abs(ori_hours - round(over_hours, 2)) <= 0.0001:
 				return None
 			else:
 				return self.color_magenta
