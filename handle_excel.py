@@ -36,7 +36,7 @@ class MyHandle(object):
 	confirm_re_accept   = u'同意'
 
 	department_name_design = u'设计部'
-	department_name_customer = u'客服部'
+	department_name_customer = u'客户服务中心'
 
 	workday_overtime = 0
 	weekend_overtime = 1
@@ -53,8 +53,8 @@ class MyHandle(object):
 		                       'time_end_str': '17:30',
 		                       'is_in': True}}
 
-	design_department_t = ['00:00', '21:00', '22:00']
-	design_department_hour = [8, 2, 4]
+	design_department_t = ['00:00', '04:00', '21:00', '22:00']
+	design_department_hour = [8, 12, 2, 4]
 
 	customer_department = {workday_overtime:
 		                      [{'time_start_str': '09:30',
@@ -203,19 +203,36 @@ class MyHandle(object):
 		return result[max_idx]
 
 	def _get_desgin_time(self, overtime_start, overtime_end):
+		# 先判断是不是隔天加班时间超过了09:30
+		tmp_time = time.strptime('09:30', '%H:%M')
+		next_day = datetime.datetime(year=overtime_start.year, month=overtime_start.month, day=overtime_start.day,
+		                               hour=tmp_time.tm_hour, minute=tmp_time.tm_min)
+		next_day += datetime.timedelta(days = 1)
+		if overtime_end > next_day:
+			return 0, ['overtime_wrong_when_design'], []
+
+		#design_department_t = ['00:00', '04:00', '21:00', '22:00']
+		#design_department_hour = [8, 12, 2, 4]
 		tmp_flag_t = [self._gen_today_datetime(overtime_end, time_str, is_end=False) for time_str in self.design_department_t]
-		if tmp_flag_t[0] == overtime_end:
+		if tmp_flag_t[0] < overtime_end <= tmp_flag_t[1]:
+			return self._judge_design_delta_day(overtime_start, overtime_end, 0)
+		elif tmp_flag_t[1] < overtime_end < tmp_flag_t[2]:
+			return self._judge_design_delta_day(overtime_start, overtime_end, 1)
+		elif tmp_flag_t[2] == overtime_end:
+			return 0, ['overtime_wrong_when_design'], []
+		elif tmp_flag_t[2] < overtime_end <= tmp_flag_t[3]:
 			return self.design_department_hour[2], [], []
-		if tmp_flag_t[0] < overtime_end < tmp_flag_t[1]:
-			date_delta = overtime_end.date() - overtime_start.date()
-			if date_delta.days == 0:
-				return 0, ['overtime_wrong_when_design'], []
-			else:
-				return self.design_department_hour[0], [], []
-		elif tmp_flag_t[1] <= overtime_end <= tmp_flag_t[2]:
-			return self.design_department_hour[1], [], []
+		elif tmp_flag_t[3] < overtime_end or tmp_flag_t[0] == overtime_end:
+			return self.design_department_hour[3], [], []
+
+		return 0, ['overtime_wrong_when_design'], []
+
+	def _judge_design_delta_day(self, overtime_start, overtime_end, result_idx):
+		date_delta = overtime_end.date() - overtime_start.date()
+		if date_delta.days == 0:
+			return 0, ['overtime_wrong_when_design'], []
 		else:
-			return self.design_department_hour[2], [], []
+			return self.design_department_hour[result_idx], [], []
 
 	def _out_put(self, w_sheet, row_idx, row, over_hours, comment, ex_time_comment=[]):
 		color = self._get_back_color(row, over_hours)
